@@ -14,18 +14,22 @@ export default function CreateMatch() {
   const [totalOvers, setTotalOvers] = useState(20)
   const [location, setLocation] = useState('')
   const [passcode, setPasscode] = useState('')
+  const [tossWinner, setTossWinner] = useState<'a' | 'b' | ''>('')
+  const [tossDecision, setTossDecision] = useState<'BAT' | 'BOWL' | ''>('')
   const [playersA, setPlayersA] = useState<string[]>(Array(11).fill(''))
   const [playersB, setPlayersB] = useState<string[]>(Array(11).fill(''))
   const [step, setStep] = useState(1) // 1: match info, 2: team A, 3: team B
 
   const updatePlayer = (team: 'a' | 'b', idx: number, value: string) => {
+    // always store names uppercase
+    const newVal = value.toUpperCase()
     if (team === 'a') {
       const copy = [...playersA]
-      copy[idx] = value
+      copy[idx] = newVal
       setPlayersA(copy)
     } else {
       const copy = [...playersB]
-      copy[idx] = value
+      copy[idx] = newVal
       setPlayersB(copy)
     }
   }
@@ -52,19 +56,26 @@ export default function CreateMatch() {
       return
     }
 
+    if (!tossWinner || !tossDecision) {
+      toast.error('Select toss winner and decision')
+      return
+    }
+
     setLoading(true)
     try {
       const res = await fetch('/api/matches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          teamAName,
-          teamBName,
+          teamAName: teamAName.toUpperCase(),
+          teamBName: teamBName.toUpperCase(),
           totalOvers,
           location: location || null,
           passcode,
-          playersA: filteredA,
-          playersB: filteredB,
+          tossWinner,
+          tossDecision,
+          playersA: filteredA.map(p => p.toUpperCase()),
+          playersB: filteredB.map(p => p.toUpperCase()),
         }),
       })
       const data = await res.json()
@@ -79,9 +90,17 @@ export default function CreateMatch() {
     }
   }
 
-  const canProceedStep1 = teamAName.trim() && teamBName.trim() && passcode.length >= 4 && passcode.length <= 6
+  const canProceedStep1 =
+    teamAName.trim() &&
+    teamBName.trim() &&
+    passcode.length >= 4 &&
+    passcode.length <= 6
+  // toss info is collected after both XIs are entered
   const canProceedStep2 = playersA.filter(p => p.trim()).length >= 2
-  const canSubmit = playersB.filter(p => p.trim()).length >= 2
+  const canSubmit =
+    playersB.filter(p => p.trim()).length >= 2 &&
+    tossWinner &&
+    tossDecision
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50">
@@ -120,8 +139,8 @@ export default function CreateMatch() {
                 <input
                   type="text"
                   value={teamAName}
-                  onChange={e => setTeamAName(e.target.value)}
-                  placeholder="e.g. KMR9 Warriors"
+                  onChange={e => setTeamAName(e.target.value.toUpperCase())}
+                  placeholder="e.g. KMR9 WARRIORS"
                   className="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                 />
               </div>
@@ -131,8 +150,8 @@ export default function CreateMatch() {
                 <input
                   type="text"
                   value={teamBName}
-                  onChange={e => setTeamBName(e.target.value)}
-                  placeholder="e.g. City Strikers"
+                  onChange={e => setTeamBName(e.target.value.toUpperCase())}
+                  placeholder="e.g. CITY STRIKERS"
                   className="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                 />
               </div>
@@ -162,6 +181,9 @@ export default function CreateMatch() {
                   />
                 </div>
               </div>
+
+              {/* toss section used later when both XIs have been entered */}
+              {/* moved to step 3 below */}
 
               <div>
                 <label className="text-sm font-medium text-gray-700 block mb-1">
@@ -223,6 +245,60 @@ export default function CreateMatch() {
               onAdd={() => addPlayer('b')}
               onRemove={(idx) => removePlayer('b', idx)}
             />
+
+            {/* toss selection once both XIs have been provided */}
+            <div className="bg-white rounded-xl p-4 border border-gray-100 space-y-3">
+              <div>
+                <label className="text-sm font-medium text-gray-700 block mb-1">Toss Winner *</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTossWinner('a')}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition border ${
+                      tossWinner === 'a' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200'
+                    }`}
+                  >
+                    {teamAName}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTossWinner('b')}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition border ${
+                      tossWinner === 'b' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200'
+                    }`}
+                  >
+                    {teamBName}
+                  </button>
+                </div>
+              </div>
+
+              {tossWinner && (
+                <div>
+                  <label className="text-sm font-medium text-gray-700 block mb-1">Decision *</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTossDecision('BAT')}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition border ${
+                        tossDecision === 'BAT' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200'
+                      }`}
+                    >
+                      BAT
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTossDecision('BOWL')}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition border ${
+                        tossDecision === 'BOWL' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200'
+                      }`}
+                    >
+                      BOWL
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="flex gap-3">
               <button onClick={() => setStep(2)} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-medium text-sm hover:bg-gray-200 transition">
                 Back

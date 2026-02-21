@@ -27,6 +27,18 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
   const [showBatsmanSelect, setShowBatsmanSelect] = useState(false)
   const [showInningsSetup, setShowInningsSetup] = useState(false)
   const [selectedBattingTeam, setSelectedBattingTeam] = useState<'a' | 'b'>('a')
+  // keep track of a selected extra that should apply to next run button
+  const [pendingExtra, setPendingExtra] = useState<BallEvent['extra_type'] | null>(null)
+
+  // when matchData loads set default based on toss
+  useEffect(() => {
+    if (matchData && matchData.match.toss_winner) {
+      const winner = matchData.match.toss_winner === 'a' ? 'a' : 'b'
+      const decision = matchData.match.toss_decision === 'BOWL' ? 'BOWL' : 'BAT'
+      const batting = decision === 'BAT' ? winner : winner === 'a' ? 'b' : 'a'
+      setSelectedBattingTeam(batting)
+    }
+  }, [matchData])
 
   const fetchMatch = useCallback(async () => {
     try {
@@ -80,7 +92,8 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d.error) }
       const result = await res.json()
-      await fetchMatch()
+      // don't block UI waiting for the refetch; subscription will deliver updates
+      fetchMatch().catch(() => {})
       return result
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Action failed'
@@ -348,14 +361,45 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
   }
 
   const { match, players } = matchData
+  // uppercase names just in case
+  match.team_a_name = match.team_a_name.toUpperCase()
+  match.team_b_name = match.team_b_name.toUpperCase()
+
+  // compute man of match when complete
+  const activeBallsAll = matchData.ballEvents.filter(e => !e.is_undone)
+  let momName = ''
+  if (match.status === 'completed') {
+    let topScorer = { name: '', runs: 0, balls: 0 }
+    players.forEach(p => {
+      const faced = activeBallsAll.filter(e => e.batsman_id === p.id && e.extra_type !== 'wide')
+      const runs = faced.reduce((s, e) => s + e.runs_scored, 0)
+      if (runs > topScorer.runs) {
+        topScorer = { name: p.name, runs, balls: faced.length }
+      }
+    })
+    let bestBowler = { name: '', wickets: 0, runs: 0 }
+    players.forEach(p => {
+      const bowled = activeBallsAll.filter(e => e.bowler_id === p.id)
+      const wickets = bowled.filter(e => e.is_wicket && e.wicket_type !== 'run_out').length
+      const runs = bowled.reduce((s, e) => s + e.total_runs, 0)
+      if (wickets > bestBowler.wickets || (wickets === bestBowler.wickets && runs < bestBowler.runs)) {
+        bestBowler = { name: p.name, wickets, runs }
+      }
+    })
+    momName = topScorer.name || bestBowler.name
+  }
   const teamAPlayers = players.filter(p => p.team === 'a')
   const teamBPlayers = players.filter(p => p.team === 'b')
 
   const battingPlayers = currentInnings
-    ? players.filter(p => p.team === currentInnings.batting_team)
+    ? players
+        .filter(p => p.team === currentInnings.batting_team)
+        .sort((a, b) => (a.batting_order || 0) - (b.batting_order || 0))
     : []
   const bowlingPlayers = currentInnings
-    ? players.filter(p => p.team === currentInnings.bowling_team)
+    ? players
+        .filter(p => p.team === currentInnings.bowling_team)
+        .sort((a, b) => (a.batting_order || 0) - (b.batting_order || 0))
     : []
 
   const dismissedIds = currentBalls
@@ -400,6 +444,11 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
             <div>
               <h1 className="text-sm font-bold text-blue-900">Scorer Panel</h1>
               <p className="text-xs text-gray-500">{match.team_a_name} vs {match.team_b_name}</p>
+              {match.toss_winner && match.toss_decision && (
+                <p className="text-xs text-gray-400 mt-1">
+                  Toss: {match.toss_winner === 'a' ? match.team_a_name : match.team_b_name} won and chose to {match.toss_decision.toLowerCase()}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -464,6 +513,11 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
               <div className="space-y-3">
                 <div>
                   <label className="text-xs font-medium text-gray-600 block mb-1">Who bats first?</label>
+                  {match.toss_winner && match.toss_decision && (
+                    <p className="text-[10px] text-gray-500 mb-1">
+                      ({match.toss_winner === 'a' ? match.team_a_name : match.team_b_name} won toss and chose to {match.toss_decision.toLowerCase()})
+                    </p>
+                  )}
                   <div className="flex gap-2">
                     <button
                       onClick={() => setSelectedBattingTeam('a')}
@@ -636,8 +690,31 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
                 {[0, 1, 2, 3, 4, 6].map(r => (
                   <button
                     key={r}
-                    onClick={() => handleRecordBall(r)}
-                    disabled={syncing}
+                    onClick={() => {
+                      if (pendingExtra) {
+                        // apply run alongside previously selected extra
+                        switch (pendingExtra) {
+                          case 'wide':
+                            // runs off a wide are all extras
+                            handleRecordBall(0, 'wide', r)
+                            break
+                          case 'no_ball':
+                            handleRecordBall(r, 'no_ball', 0)
+                            break
+                          case 'bye':
+                          case 'leg_bye':
+                            handleRecordBall(0, pendingExtra, r)
+                            break
+                          default:
+                            handleRecordBall(r)
+                        }
+                        setPendingExtra(null)
+                      } else {
+                        handleRecordBall(r)
+                      }
+                    }}
+                    // allow rapid input; network latency handled optimistically
+                    disabled={false}
                     className={`py-3 rounded-xl text-lg font-bold transition-all active:scale-95 disabled:opacity-50 ${
                       r === 4 ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 border-2 border-blue-200' :
                       r === 6 ? 'bg-green-50 text-green-700 hover:bg-green-100 border-2 border-green-200' :
@@ -656,34 +733,56 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
               <p className="text-xs font-medium text-gray-500 mb-3">EXTRAS</p>
               <div className="grid grid-cols-4 gap-2">
                 <button
-                  onClick={() => handleRecordBall(0, 'wide', 0)}
-                  disabled={syncing}
-                  className="py-2.5 bg-orange-50 text-orange-700 rounded-xl text-sm font-semibold hover:bg-orange-100 transition active:scale-95 border border-orange-200"
+                  onClick={() => setPendingExtra(prev => prev === 'wide' ? null : 'wide')}
+                  // don't block extra selection while server syncs
+                  disabled={false}
+                  className={`py-2.5 rounded-xl text-sm font-semibold transition active:scale-95 border ${
+                    pendingExtra === 'wide'
+                      ? 'bg-orange-700 text-white border-orange-700'
+                      : 'bg-orange-50 text-orange-700 hover:bg-orange-100 border border-orange-200'
+                  }`}
                 >
                   Wide
                 </button>
                 <button
-                  onClick={() => handleRecordBall(0, 'no_ball', 0)}
-                  disabled={syncing}
-                  className="py-2.5 bg-orange-50 text-orange-700 rounded-xl text-sm font-semibold hover:bg-orange-100 transition active:scale-95 border border-orange-200"
+                  onClick={() => setPendingExtra(prev => prev === 'no_ball' ? null : 'no_ball')}
+                  disabled={false}
+                  className={`py-2.5 rounded-xl text-sm font-semibold transition active:scale-95 border ${
+                    pendingExtra === 'no_ball'
+                      ? 'bg-orange-700 text-white border-orange-700'
+                      : 'bg-orange-50 text-orange-700 hover:bg-orange-100 border border-orange-200'
+                  }`}
                 >
                   No Ball
                 </button>
                 <button
-                  onClick={() => handleRecordBall(1, 'bye', 0)}
-                  disabled={syncing}
-                  className="py-2.5 bg-yellow-50 text-yellow-700 rounded-xl text-sm font-semibold hover:bg-yellow-100 transition active:scale-95 border border-yellow-200"
+                  onClick={() => setPendingExtra(prev => prev === 'bye' ? null : 'bye')}
+                  disabled={false}
+                  className={`py-2.5 rounded-xl text-sm font-semibold transition active:scale-95 border ${
+                    pendingExtra === 'bye'
+                      ? 'bg-yellow-700 text-white border-yellow-700'
+                      : 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100 border border-yellow-200'
+                  }`}
                 >
                   Bye
                 </button>
                 <button
-                  onClick={() => handleRecordBall(1, 'leg_bye', 0)}
-                  disabled={syncing}
-                  className="py-2.5 bg-yellow-50 text-yellow-700 rounded-xl text-sm font-semibold hover:bg-yellow-100 transition active:scale-95 border border-yellow-200"
+                  onClick={() => setPendingExtra(prev => prev === 'leg_bye' ? null : 'leg_bye')}
+                  disabled={false}
+                  className={`py-2.5 rounded-xl text-sm font-semibold transition active:scale-95 border ${
+                    pendingExtra === 'leg_bye'
+                      ? 'bg-yellow-700 text-white border-yellow-700'
+                      : 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100 border border-yellow-200'
+                  }`}
                 >
                   Leg Bye
                 </button>
               </div>
+              {pendingExtra && (
+                <p className="text-xs text-gray-500 mt-2">
+                  Selected extra: {pendingExtra.replace('_', ' ')} – choose runs or press again to cancel
+                </p>
+              )}
             </div>
 
             {/* Wicket */}
@@ -762,6 +861,7 @@ export default function ScorerPage({ params }: { params: Promise<{ id: string }>
           <div className="bg-green-50 rounded-xl p-4 border border-green-200 text-center space-y-2">
             <p className="text-lg font-bold text-green-800">Match Completed</p>
             {match.result_summary && <p className="text-sm text-green-700">{match.result_summary}</p>}
+            {momName && <p className="text-sm text-green-700">Man of the Match: {momName}</p>}
           </div>
         )}
 

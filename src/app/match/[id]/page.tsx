@@ -109,6 +109,9 @@ export default function MatchViewerPage({ params }: { params: Promise<{ id: stri
   if (!matchData) return null
 
   const { match, players, innings, ballEvents } = matchData
+  // normalize casing
+  match.team_a_name = match.team_a_name.toUpperCase()
+  match.team_b_name = match.team_b_name.toUpperCase()
   const activeBalls = ballEvents.filter(e => !e.is_undone)
   const currentInnings = innings.find(i => !i.is_completed) || innings[innings.length - 1]
   const firstInnings = innings.find(i => i.innings_number === 1)
@@ -295,6 +298,11 @@ export default function MatchViewerPage({ params }: { params: Promise<{ id: stri
 
             {/* Status line */}
             <div className="mt-3 pt-3 border-t border-white/10">
+              {match.toss_winner && match.toss_decision && (
+                <p className="text-xs text-white/70">
+                  Toss: {match.toss_winner === 'a' ? match.team_a_name : match.team_b_name} won and chose to {match.toss_decision.toLowerCase()}
+                </p>
+              )}
               {match.status === 'completed' && match.result_summary ? (
                 <p className="text-xs text-blue-100 font-medium flex items-center gap-1.5">
                   <Trophy className="w-3.5 h-3.5 text-yellow-300" />
@@ -595,6 +603,19 @@ function FullScorecard({ innings, ballEvents, players, match }: {
   const battedStats = batsmanStats.filter(b => b.balls > 0 || b.isOut)
   const yetToBat = batsmanStats.filter(b => b.balls === 0 && !b.isOut)
 
+  // reorder batsmen based on first ball appearance (openers first, then others in the order they came in)
+  const firstAppearance: Record<string, number> = {}
+  innBalls.forEach((e, idx) => {
+    if (!firstAppearance[e.batsman_id]) {
+      firstAppearance[e.batsman_id] = idx + 1 // use 1-based index to avoid zero default
+    }
+  })
+  battedStats.sort((a, b) => {
+    const ai = firstAppearance[a.player.id] || Number.MAX_SAFE_INTEGER
+    const bi = firstAppearance[b.player.id] || Number.MAX_SAFE_INTEGER
+    return ai - bi
+  })
+
   // Extras breakdown
   const wides = innBalls.filter(e => e.extra_type === 'wide').length
   const noBalls = innBalls.filter(e => e.extra_type === 'no_ball').length
@@ -728,6 +749,9 @@ function MatchSummary({ matchData }: { matchData: MatchData }) {
       bestBowler = { name: p.name, wickets, runs, balls }
     }
   })
+
+  // automatic man of the match (simple top scorer fallback)
+  const manOfMatchAuto = topScorer.name || bestBowler.name
 
   return (
     <div className="bg-white rounded-xl border border-gray-100 overflow-hidden shadow-sm">

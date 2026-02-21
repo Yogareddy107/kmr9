@@ -5,7 +5,9 @@ export function computeBatsmanStats(
   players: Player[],
   battingTeam: 'a' | 'b'
 ): BatsmanStats[] {
-  const batsmen = players.filter(p => p.team === battingTeam)
+  const batsmen = players
+    .filter(p => p.team === battingTeam)
+    .sort((a, b) => (a.batting_order || 0) - (b.batting_order || 0))
   const active = ballEvents.filter(e => !e.is_undone)
 
   return batsmen.map(player => {

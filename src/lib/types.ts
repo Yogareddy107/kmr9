@@ -9,7 +9,8 @@ export interface Match {
   passcode_hash: string
   status: MatchStatus
   toss_winner: string | null
-  toss_decision: string | null
+  toss_decision: 'BAT' | 'BOWL' | null
+  man_of_match_id: string | null
   winner: string | null
   result_summary: string | null
   is_deleted: boolean

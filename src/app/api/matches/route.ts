@@ -5,9 +5,9 @@ import bcrypt from 'bcryptjs'
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { teamAName, teamBName, totalOvers, location, passcode, playersA, playersB } = body
+    const { teamAName, teamBName, totalOvers, location, passcode, tossWinner, tossDecision, playersA, playersB } = body
 
-    if (!teamAName || !teamBName || !passcode || !playersA?.length || !playersB?.length) {
+    if (!teamAName || !teamBName || !passcode || !playersA?.length || !playersB?.length || !tossWinner || !tossDecision) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
@@ -17,15 +17,23 @@ export async function POST(req: NextRequest) {
 
     const passcodeHash = await bcrypt.hash(passcode, 10)
 
+    // Normalize casing
+    const nameA = teamAName.toUpperCase()
+    const nameB = teamBName.toUpperCase()
+    const tossW = tossWinner === 'a' ? 'a' : 'b' // store as a/b
+    const tossD = tossDecision === 'BAT' ? 'BAT' : 'BOWL'
+
     const { data: match, error: matchError } = await supabaseAdmin
       .from('matches')
       .insert({
-        team_a_name: teamAName,
-        team_b_name: teamBName,
+        team_a_name: nameA,
+        team_b_name: nameB,
         total_overs: totalOvers || 20,
         location: location || null,
         passcode_hash: passcodeHash,
         status: 'upcoming',
+        toss_winner: tossW,
+        toss_decision: tossD,
       })
       .select()
       .single()
@@ -35,13 +43,13 @@ export async function POST(req: NextRequest) {
     const playerRecords = [
       ...playersA.map((name: string, i: number) => ({
         match_id: match.id,
-        name,
+        name: name.toUpperCase(),
         team: 'a',
         batting_order: i + 1,
       })),
       ...playersB.map((name: string, i: number) => ({
         match_id: match.id,
-        name,
+        name: name.toUpperCase(),
         team: 'b',
         batting_order: i + 1,
       })),

@@ -4,17 +4,89 @@ import { useEffect, useState, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Plus, Radio, Trophy, MapPin, Clock, Trash2 } from 'lucide-react'
+import { formatOvers } from '@/lib/cricket-utils'
 import { toast } from 'sonner'
 import { Match } from '@/lib/types'
 
 export default function Home() {
   const [matches, setMatches] = useState<Match[]>([])
+  // summary stored per-match with optional scores for both sides, current batting team, toss, and final result
+  interface Summary {
+    teamAScore?: string
+    teamAOvers?: string
+    teamBScore?: string
+    teamBOvers?: string
+    battingTeam?: 'a' | 'b'
+    toss?: string
+    result?: string
+  }
+  const [matchSummaries, setMatchSummaries] = useState<Record<string, Summary>>({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     fetch('/api/matches')
       .then(r => r.json())
-      .then(d => setMatches(d.matches || []))
+      .then(d => {
+        const list: Match[] = (d.matches || []).map((m: Match) => ({
+          ...m,
+          team_a_name: m.team_a_name.toUpperCase(),
+          team_b_name: m.team_b_name.toUpperCase(),
+        }))
+        setMatches(list)
+        // after getting base list, fetch details for each
+        return list
+      })
+      .then(async (list: Match[]) => {
+        const summaries: Record<string, Summary> = {}
+        await Promise.all(
+          list.map(async m => {
+            try {
+              const res = await fetch(`/api/matches/${m.id}`)
+              if (!res.ok) return
+              const data = await res.json()
+              const { match, innings } = data as any
+
+              // initialize empty scores
+              const s: Summary = {}
+
+              if (innings && innings.length > 0) {
+                // gather scores for each batting team
+                innings.forEach((inn: any) => {
+                  const scoreStr = `${inn.total_runs}/${inn.total_wickets}`
+                  const oversStr = `(${formatOvers(inn.total_balls)})`
+                  if (inn.batting_team === 'a') {
+                    s.teamAScore = scoreStr
+                    s.teamAOvers = oversStr
+                  } else {
+                    s.teamBScore = scoreStr
+                    s.teamBOvers = oversStr
+                  }
+                })
+
+                // determine current innings for live/ongoing info
+                const current = innings.find((i: any) => !i.is_completed) || innings[innings.length - 1]
+                if (current) {
+                  s.battingTeam = current.batting_team
+                }
+              }
+
+              // if match has been completed but no innings data (unlikely) or just want result text
+              if (match.status === 'completed' && match.result_summary) {
+                s.result = match.result_summary
+              }
+
+              // toss info
+              if (match.toss_winner && match.toss_decision) {
+                const tname = match.toss_winner === 'a' ? match.team_a_name : match.team_b_name
+                s.toss = `Toss: ${tname} chose to ${match.toss_decision.toLowerCase()}`
+              }
+
+              summaries[m.id] = s
+            } catch {}
+          })
+        )
+        setMatchSummaries(summaries)
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -72,6 +144,7 @@ export default function Home() {
                 title="Live"
                 icon={<Radio className="w-4 h-4 text-red-500 animate-pulse" />}
                 matches={liveMatches}
+                summaries={matchSummaries}
                 onDelete={(id: string) => setMatches(prev => prev.filter(m => m.id !== id))}
               />
             )}
@@ -80,6 +153,7 @@ export default function Home() {
                 title="Upcoming"
                 icon={<Clock className="w-4 h-4 text-blue-500" />}
                 matches={upcomingMatches}
+                summaries={matchSummaries}
                 onDelete={(id: string) => setMatches(prev => prev.filter(m => m.id !== id))}
               />
             )}
@@ -88,6 +162,7 @@ export default function Home() {
                 title="Completed"
                 icon={<Trophy className="w-4 h-4 text-green-500" />}
                 matches={completedMatches}
+                summaries={matchSummaries}
                 onDelete={(id: string) => setMatches(prev => prev.filter(m => m.id !== id))}
               />
             )}
@@ -98,7 +173,7 @@ export default function Home() {
   )
 }
 
-function MatchSection({ title, icon, matches, onDelete }: { title: string; icon: React.ReactNode; matches: Match[]; onDelete: (id: string) => void }) {
+function MatchSection({ title, icon, matches, onDelete, summaries }: { title: string; icon: React.ReactNode; matches: Match[]; onDelete: (id: string) => void; summaries: Record<string, Summary> }) {
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
@@ -108,19 +183,21 @@ function MatchSection({ title, icon, matches, onDelete }: { title: string; icon:
       </div>
       <div className="space-y-3">
         {matches.map(m => (
-          <MatchCard key={m.id} match={m} onDelete={onDelete} />
+          <MatchCard key={m.id} match={m} onDelete={onDelete} summary={summaries[m.id] || {}} />
         ))}
       </div>
     </section>
   )
 }
 
-function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) => void }) {
+function MatchCard({ match, onDelete, summary }: { match: Match; onDelete: (id: string) => void; summary: Summary }) {
   const router = useRouter()
   const isLive = match.status === 'live' || match.status === 'innings_break'
   const startX = useRef(0)
   const dragging = useRef(false)
   const [translate, setTranslate] = useState(0)
+  // summary now comes from props
+  // const summary = matchSummaries[match.id] || {}
   const revealWidth = 88
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -190,7 +267,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
         onPointerCancel={handlePointerUp}
         onClick={handleCardClick}
         style={{ transform: `translateX(${translate}px)` }}
-        className={`bg-white rounded-xl p-4 border transition-all ${isLive ? 'border-blue-200 shadow-sm shadow-blue-100 hover:shadow-md' : 'border-gray-100 hover:shadow-md'}`}
+        className={`rounded-xl p-4 border transition-all ${isLive ? 'bg-white border-blue-200 shadow-sm shadow-blue-100 hover:shadow-md' : 'bg-blue-50 border-blue-100 hover:shadow-md'}`}
       >
         <div className="flex items-center justify-between mb-2">
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
@@ -210,14 +287,45 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
         </div>
         <div className="flex items-center justify-between">
           <div>
-            <p className="font-semibold text-gray-900">{match.team_a_name}</p>
+            {/* team A line */}
+            <p className={`font-semibold text-gray-900 ${match.status === 'completed' && match.winner === 'a' ? 'text-green-600' : ''}`}>              
+              {match.team_a_name}{summary.teamAScore ? ` ${summary.teamAScore}` : ''}
+              {summary.teamAOvers && (
+                <span className="text-xs text-gray-400"> {summary.teamAOvers}</span>
+              )}
+              {match.status === 'completed' && match.winner === 'a' && (
+                <Trophy className="inline w-3 h-3 text-green-600 ml-1" />
+              )}
+            </p>
+
             <p className="text-xs text-gray-400">vs</p>
-            <p className="font-semibold text-gray-900">{match.team_b_name}</p>
+
+            {/* team B line */}
+            <p className={`font-semibold text-gray-900 ${match.status === 'completed' && match.winner === 'b' ? 'text-green-600' : ''}`}>              
+              {match.team_b_name}{summary.teamBScore ? ` ${summary.teamBScore}` : ''}
+              {summary.teamBOvers && (
+                <span className="text-xs text-gray-400"> {summary.teamBOvers}</span>
+              )}
+              {match.status === 'completed' && match.winner === 'b' && (
+                <Trophy className="inline w-3 h-3 text-green-600 ml-1" />
+              )}
+            </p>
+
+            {summary.toss && <p className="text-xs text-gray-500 mt-0.5">{summary.toss}</p>}
           </div>
           <div className="text-right">
-            <p className="text-xs text-gray-400">{match.total_overs} overs</p>
-            {match.result_summary && (
-              <p className="text-xs text-green-600 font-medium mt-1">{match.result_summary}</p>
+            {/* show overs for current innings when live, otherwise show match total overs */}
+            {match.status !== 'completed' && summary.battingTeam ? (
+              <p className="text-xs text-gray-400">
+                {summary.battingTeam === 'a' ? summary.teamAOvers : summary.teamBOvers}
+              </p>
+            ) : (
+              <p className="text-xs text-gray-400">
+                {match.total_overs} overs
+              </p>
+            )}
+            {summary.result && (
+              <p className="text-xs text-green-600 font-medium mt-1">{summary.result}</p>
             )}
           </div>
         </div>
